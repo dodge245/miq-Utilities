@@ -211,14 +211,25 @@ module RedHatConsulting_Utilities
       # @param seconds Number of seconds to wait before next retry
       # @param reason  Reason for the retry
       def automate_retry(seconds, reason)
-        $evm.root['ae_result'] = 'retry'
-        $evm.root['ae_retry_interval'] = "#{seconds.to_i}.seconds"
-        $evm.root['ae_reason'] = reason
+        @handle.root['ae_result'] = 'retry'
+        @handle.root['ae_retry_interval'] = "#{seconds.to_i}.seconds"
+        @handle.root['ae_reason'] = reason
 
-        $evm.log(:info, "Retrying #{@method} after #{seconds} seconds, because '#{reason}'") if @DEBUG
+        @handle.log(:info, "Retrying #{@method} after #{seconds} seconds, because '#{reason}'") if @DEBUG
         exit MIQ_OK
       end
       
+      # Set attributes to skip to specified next state
+      #
+      # @param message Reason for the skip
+      # @param next_state State to skip to
+      def skip_to_state(message, next_state)
+        log(:info, "#{message}. Skip to State <#{next_state}>")
+        @handle.root['ae_result']     = 'skip'
+        @handle.root['ae_next_state'] = next_state
+        exit MIQ_OK
+      end
+
       # Function for getting the current VM and associated options based on the vmdb_object_type.
       #
       # Supported vmdb_object_types
@@ -267,13 +278,82 @@ module RedHatConsulting_Utilities
             options = options.merge(options[:dialog])    if options[:dialog]
           else
             error("Can not handle vmdb_object_type: #{@handle.root['vmdb_object_type']}")
-          end
-
-          # standerdize the option keys
-          options = options.symbolize_keys()
-
-          return vm,options
         end
+
+        # standerdize the option keys
+        options = options.symbolize_keys()
+
+        return vm,options
+      end
+
+      # Create a Tag  Category if it does not already exist
+      #
+      # @param category     Tag Category to create
+      # @param description  Tag Category description.
+      #                     Optional
+      #                     Defaults to the `category`
+      # @param single_value True if a resource can only have one tag from this category,
+      #                     False if a resource can have multiple tags from this category.
+      #                     Optional.
+      #                     Defaults to `false`
+      #
+      # @source https://pemcg.gitbooks.io/mastering-automation-in-cloudforms-4-2-and-manage/content/using_tags_from_automate/chapter.html
+      def create_tag_category(category, description = nil, single_value = false)
+        category_name = to_tag_name(category)
+        unless @handle.execute('category_exists?', category_name)
+          @handle.execute('category_create',
+            :name => category_name,
+            :single_value => single_value,
+            :perf_by_tag => false,
+            :description => description || category)
+        end
+      end
+
+      # Gets all of the Tags in a given Tag Category
+      #
+      # @param category Tag Category to get all of the Tags for
+      #
+      # @return Hash of Tag names mapped to Tag descriptions
+      #
+      # @source https://pemcg.gitbooks.io/mastering-automation-in-cloudforms-4-2-and-manage/content/using_tags_from_automate/chapter.html#_getting_the_list_of_tags_in_a_category
+      def get_category_tags(category)
+        classification = @handle.vmdb(:classification).find_by_name(category)
+        tags = {}
+        @handle.vmdb(:classification).where(:parent_id => classification.id).each do |tag|
+          tags[tag.name] = tag.description
+        end
+
+        return tags
+      end
+
+
+      # Create a Tag in a given Category if it does not already exist
+      #
+      # @param category Tag Category to create the Tag in
+      # @param tag      Tag to create in the given Tag Category
+      #
+      # @source https://pemcg.gitbooks.io/mastering-automation-in-cloudforms-4-2-and-manage/content/using_tags_from_automate/chapter.html
+      def create_tag(category, tag)
+        create_tag_category(category)
+        tag_name = to_tag_name(tag)
+        unless @handle.execute('tag_exists?', category, tag_name)
+          @handle.execute('tag_create',
+            category,
+            :name => tag_name,
+            :description => tag)
+        end
+
+        return "#{category}/#{tag_name}"
+      end
+
+      # Takes a string and makes it a valid tag name
+      #
+      # @param str String to turn into a valid Tag name
+      #
+      # @return Given string transformed into a valid Tag name
+      def to_tag_name(str)
+        return str.downcase.gsub(/[^a-z0-9_]+/,'_')
+      end
 
     end
   end
